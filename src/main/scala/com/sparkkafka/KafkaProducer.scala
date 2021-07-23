@@ -4,6 +4,9 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 
+import io.circe._, io.circe.generic.auto._, io.circe.parser._, io.circe.syntax._
+case class KafkaJSON(id: String, lable: String, value: String)
+
 object KafkaProducer extends App {
 
   implicit lazy val spark: SparkSession = SparkSession
@@ -16,46 +19,47 @@ object KafkaProducer extends App {
   import spark.implicits._
   val sampleData =
     """
-      |programname,id,waterhardness
-      |Eco,id1,H02
-      |Auto,id1,H04
-      |NightWash,id2,H02
-      |NightWash,id2,H01
-      |Auto,id1,H02
-      |Auto,id1,H00
-      |Auto,id1,H05
+      |id,lable,value
+      |id1,lable1,value1
+      |id1,lable2,value1
+      |id1,lable1,value2
+      |id1,lable1,value1
+      |id1,lable2,value1
+      |id2,lable1,value2
+      |id2,lable1,value1
+      |id2,lable2,value1
+      |id2,lable1,value2
+      |id2,lable1,value2
+      |id2,lable1,value2
+      |id2,lable1,value2
+      |id2,lable1,value2
       |""".stripMargin.lines.toList
+
   val csvData: Dataset[String] = sc.parallelize(sampleData).toDS()
   val csvRDD = spark.read
     .option("header", "true")
     .option("inferSchema", "true")
     .csv(csvData)
     .rdd
-  val transform = csvRDD
+
+  val kafkaJSONRDD = csvRDD
     .map { row =>
       val m = row.getValuesMap(row.schema.fieldNames)
-      (m.getOrElse("id", "NotSet"), m)
+      KafkaJSON(
+        m.getOrElse("id", "NotSet"),
+        m.getOrElse("lable", "NotSet"),
+        m.getOrElse("value", "NotSet")
+      )
     }
-    .groupByKey()
-    .map(
-      data =>
-        (
-          data._1,
-          data._2
-            .flatMap(_.map(mappedData => s"${mappedData._1}: ${mappedData._2}"))
-            .toSeq
-            .mkString(",")
-        )
-    )
 
   val kafkaSchema = new StructType()
     .add(StructField("key", StringType, true))
     .add(StructField("value", StringType, true))
 
   val kafkaDF = spark.createDataFrame(
-    transform.zipWithIndex.map {
+    kafkaJSONRDD.zipWithIndex.map {
       case (data, index) =>
-        Row(index.toString, s"${data._1} => ${data._2}")
+        Row(index.toString, data.asJson.noSpaces)
     },
     kafkaSchema
   )
